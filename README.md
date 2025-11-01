@@ -92,12 +92,30 @@ This project is configured for easy deployment to platforms like [Vercel](https:
     - Click "Add New... -> Project" and import your repository.
     - Vercel should automatically detect it as a Vite project. The `vercel.json` file in the root directory will configure the build and rewrites correctly to handle both the frontend and the backend API.
 
-3.  **Configure Environment Variables:**
+3.  **Configure Environment Variables (CRITICAL STEP):**
+    - The local `.env` file is **not** used by Vercel. You must add the variables in the Vercel dashboard.
     - In your Vercel project's settings, go to "Settings" -> "Environment Variables".
-    - Add your `DATABASE_URL` with the connection string from Neon.
-    - Add `FRONTEND_URL` with the URL Vercel assigns to your deployment (e.g., `https://your-app-name.vercel.app`). This is crucial for CORS on the backend.
+    - Add the following two variables:
+        1. **`DATABASE_URL`**:
+            - **Name**: `DATABASE_URL`
+            - **Value**: Your full connection string from Neon.
+        2. **`FRONTEND_URL`**:
+            - **Name**: `FRONTEND_URL`
+            - **Value**: The production URL Vercel assigns to your deployment (e.g., `https://your-app-name.vercel.app`). This is crucial for CORS on the backend.
 
-4.  **Deploy:** Click the "Deploy" button. Vercel will build the frontend, deploy the backend as a serverless function, and your site will be live.
+4.  **Deploy / Redeploy:**
+    - If this is the first time, click "Deploy".
+    - If you are adding the variables to an existing project, you must trigger a new deployment for the changes to take effect. Go to the "Deployments" tab and "Redeploy" the latest one.
+
+## Debugging on Vercel
+
+If the application is not working after deployment, the most likely cause is a problem with the backend connecting to the database. You will **not** see connection errors in the "Build Logs". You must check the **"Runtime Logs"**.
+
+1.  Go to your project dashboard on Vercel.
+2.  Click the **Logs** tab.
+3.  Ensure you are viewing logs for the **Functions** and not the Build.
+4.  Open your deployed application in a new browser tab. This will trigger the backend serverless function to run.
+5.  Check the logs in the Vercel dashboard. You should see messages like `✅ Database connection test successful.` If there is an error, it will be printed here in red. This is the best way to diagnose post-deployment issues.
 
 ## Default Credentials
 

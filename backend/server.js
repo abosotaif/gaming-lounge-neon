@@ -130,21 +130,25 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const { Pool } = pg;
 
-// Use the connection string directly and explicitly enable SSL.
-// This is the most robust way to connect to Neon.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: true, 
+  ssl: {
+    rejectUnauthorized: false
+  }, 
 });
 
-app.use(cors());
+const allowedOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
+console.log(`CORS enabled for origin: ${allowedOrigin}`);
+app.use(cors({ origin: allowedOrigin }));
 app.use(express.json());
 
-// --- Database Initialization ---
+// --- Database Initialization Function ---
 const initializeDatabase = async () => {
   const client = await pool.connect();
   try {
     console.log('Running database schema setup...');
+    
+    // Create tables one by one for robustness
     await client.query(`
       CREATE TABLE IF NOT EXISTS devices (
         id SERIAL PRIMARY KEY,
@@ -152,7 +156,9 @@ const initializeDatabase = async () => {
         status TEXT NOT NULL,
         type TEXT NOT NULL
       );
-
+    `);
+    
+    await client.query(`
       CREATE TABLE IF NOT EXISTS reports (
         id UUID PRIMARY KEY,
         "deviceId" INTEGER NOT NULL,
@@ -163,7 +169,9 @@ const initializeDatabase = async () => {
         cost NUMERIC(10, 2) NOT NULL,
         date DATE NOT NULL
       );
+    `);
 
+    await client.query(`
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value JSONB NOT NULL
@@ -200,19 +208,35 @@ const initializeDatabase = async () => {
     }
     console.log('Settings check/seeding complete.');
 
-  } catch (err) {
-    console.error('Error initializing database:', err);
-    // Re-throw the error to be caught by the startup logic
-    throw err;
   } finally {
     client.release();
   }
 };
 
+// --- Server Initialization Logic ---
+// This promise will resolve when the database is ready. It runs once when the serverless function cold starts.
+const dbInitPromise = (async () => {
+  console.log('Serverless function initializing...');
+  try {
+    const client = await pool.connect();
+    console.log('✅ Database connection test successful.');
+    client.release();
+    await initializeDatabase();
+    console.log('✅ Database initialization sequence complete.');
+  } catch (err) {
+    console.error('🔴 CRITICAL: Database connection or initialization failed during startup.');
+    console.error(err);
+    // Rethrow to make sure following requests fail clearly
+    throw err;
+  }
+})();
+
+
 // --- API Routes ---
 
 app.get('/api/state', async (req, res) => {
     try {
+        await dbInitPromise; // Ensure DB is ready before proceeding
         const devicesRes = await pool.query('SELECT * FROM devices ORDER BY id ASC');
         const reportsRes = await pool.query('SELECT * FROM reports ORDER BY "startTime" DESC');
         const settingsRes = await pool.query("SELECT key, value FROM settings");
@@ -237,6 +261,7 @@ app.get('/api/state', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
     try {
+        await dbInitPromise;
         const { user, pass } = req.body;
         const credentialsRes = await pool.query("SELECT value FROM settings WHERE key = 'credentials'");
         const creds = credentialsRes.rows[0]?.value || INITIAL_CREDENTIALS;
@@ -254,6 +279,7 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/devices', async (req, res) => {
     try {
+        await dbInitPromise;
         const { name, status, type } = req.body;
         const newDevice = await pool.query(
             'INSERT INTO devices (name, status, type) VALUES ($1, $2, $3) RETURNING *',
@@ -268,6 +294,7 @@ app.post('/api/devices', async (req, res) => {
 
 app.put('/api/devices/:id', async (req, res) => {
     try {
+        await dbInitPromise;
         const { id } = req.params;
         const { name, status, type } = req.body;
         const updatedDevice = await pool.query(
@@ -283,6 +310,7 @@ app.put('/api/devices/:id', async (req, res) => {
 
 app.delete('/api/devices/:id', async (req, res) => {
     try {
+        await dbInitPromise;
         const { id } = req.params;
         await pool.query('DELETE FROM devices WHERE id = $1', [id]);
         res.status(204).send();
@@ -294,6 +322,7 @@ app.delete('/api/devices/:id', async (req, res) => {
 
 app.post('/api/sessions/end', async (req, res) => {
     try {
+        await dbInitPromise;
         const { reportData } = req.body;
         const newId = uuidv4();
         const date = new Date(reportData.endTime).toISOString().split('T')[0];
@@ -311,6 +340,7 @@ app.post('/api/sessions/end', async (req, res) => {
 
 app.delete('/api/reports', async (req, res) => {
     try {
+        await dbInitPromise;
         await pool.query('TRUNCATE TABLE reports');
         res.status(204).send();
     } catch (err) {
@@ -321,6 +351,7 @@ app.delete('/api/reports', async (req, res) => {
 
 const updateSetting = async (key, value, res) => {
     try {
+        await dbInitPromise;
         await pool.query(
             'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
             [key, JSON.stringify(value)]
@@ -344,20 +375,11 @@ app.post('/api/settings/credentials', async (req, res) => {
     await updateSetting('credentials', req.body.value, res);
 });
 
-// --- Start Server ---
-app.listen(PORT, async () => {
-  console.log(`Backend server is running on http://localhost:${PORT}`);
-  try {
-    // Test the database connection on startup
-    const client = await pool.connect();
-    console.log('✅ Successfully connected to the database.');
-    client.release();
-    // Initialize the database schema and seed data
-    await initializeDatabase();
-    console.log('✅ Database initialization complete.');
-  } catch (err) {
-    console.error('🔴 CRITICAL: Could not connect to or initialize the database.');
-    console.error(err);
-    console.log('Please ensure the DATABASE_URL in backend/.env is correct and the database is accessible.');
-  }
+// --- Start Server for Local Development ---
+// Vercel ignores this and uses the exported `app` instance.
+app.listen(PORT, () => {
+  console.log(`Backend server for local development is running on http://localhost:${PORT}`);
 });
+
+// Export the app instance for Vercel
+export default app;
