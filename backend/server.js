@@ -130,10 +130,11 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const { Pool } = pg;
 
-// Use the connection string directly. node-postgres is smart enough to parse
-// SSL and other parameters from the URL. This is simpler and less error-prone.
+// Use the connection string directly and explicitly enable SSL.
+// This is the most robust way to connect to Neon.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: true, 
 });
 
 app.use(cors());
