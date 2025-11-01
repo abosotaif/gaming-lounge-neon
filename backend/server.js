@@ -130,9 +130,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const { Pool } = pg;
 
+// Use the connection string directly. node-postgres is smart enough to parse
+// SSL and other parameters from the URL. This is simpler and less error-prone.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
 app.use(cors());
@@ -142,6 +143,7 @@ app.use(express.json());
 const initializeDatabase = async () => {
   const client = await pool.connect();
   try {
+    console.log('Running database schema setup...');
     await client.query(`
       CREATE TABLE IF NOT EXISTS devices (
         id SERIAL PRIMARY KEY,
@@ -171,32 +173,36 @@ const initializeDatabase = async () => {
 
     const devicesCount = await client.query('SELECT COUNT(*) FROM devices');
     if (parseInt(devicesCount.rows[0].count, 10) === 0) {
-      console.log('Seeding initial devices...');
+      console.log('No devices found. Seeding initial devices...');
       const deviceInserts = INITIAL_DEVICES.map(d => 
         client.query('INSERT INTO devices (id, name, status, type) VALUES ($1, $2, $3, $4)', [d.id, d.name, d.status, d.type])
       );
       await Promise.all(deviceInserts);
       await client.query(`SELECT setval('devices_id_seq', (SELECT MAX(id) FROM devices))`);
+      console.log('Device seeding complete.');
     }
 
     const settingsRes = await client.query("SELECT key FROM settings");
     const existingKeys = settingsRes.rows.map(r => r.key);
+    
+    const settingsToSeed = {
+        prices: INITIAL_PRICES,
+        credentials: INITIAL_CREDENTIALS,
+        labels: INITIAL_LABELS,
+    };
 
-    if (!existingKeys.includes('prices')) {
-        console.log("Seeding initial prices...");
-        await client.query("INSERT INTO settings (key, value) VALUES ('prices', $1::jsonb)", [JSON.stringify(INITIAL_PRICES)]);
+    for (const [key, value] of Object.entries(settingsToSeed)) {
+        if (!existingKeys.includes(key)) {
+            console.log(`Seeding initial setting: ${key}...`);
+            await client.query("INSERT INTO settings (key, value) VALUES ($1, $2::jsonb)", [key, JSON.stringify(value)]);
+        }
     }
-    if (!existingKeys.includes('credentials')) {
-        console.log("Seeding initial credentials...");
-        await client.query("INSERT INTO settings (key, value) VALUES ('credentials', $1::jsonb)", [JSON.stringify(INITIAL_CREDENTIALS)]);
-    }
-    if (!existingKeys.includes('labels')) {
-        console.log("Seeding initial labels...");
-        await client.query("INSERT INTO settings (key, value) VALUES ('labels', $1::jsonb)", [JSON.stringify(INITIAL_LABELS)]);
-    }
+    console.log('Settings check/seeding complete.');
 
   } catch (err) {
     console.error('Error initializing database:', err);
+    // Re-throw the error to be caught by the startup logic
+    throw err;
   } finally {
     client.release();
   }
@@ -338,7 +344,19 @@ app.post('/api/settings/credentials', async (req, res) => {
 });
 
 // --- Start Server ---
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Backend server is running on http://localhost:${PORT}`);
-  initializeDatabase();
+  try {
+    // Test the database connection on startup
+    const client = await pool.connect();
+    console.log('✅ Successfully connected to the database.');
+    client.release();
+    // Initialize the database schema and seed data
+    await initializeDatabase();
+    console.log('✅ Database initialization complete.');
+  } catch (err) {
+    console.error('🔴 CRITICAL: Could not connect to or initialize the database.');
+    console.error(err);
+    console.log('Please ensure the DATABASE_URL in backend/.env is correct and the database is accessible.');
+  }
 });
