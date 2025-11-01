@@ -16,9 +16,9 @@ interface AppContextType {
   deleteDevice: (id: number) => Promise<void>;
   updateDevice: (id: number, updates: Partial<Device>) => Promise<void>;
   sessions: { [key: number]: Session | undefined };
-  startSession: (deviceId: number, gameType: GameType, timeMode: TimeMode, playerName?: string, initialMinutes?: number) => void;
+  startSession: (deviceId: number, gameType: GameType, timeMode: TimeMode, playerName?: string, initialMinutes?: number) => Promise<void>;
   endSession: (deviceId: number) => Promise<void>;
-  updateSession: (deviceId: number, updates: Partial<Session>) => void;
+  updateSession: (deviceId: number, updates: Partial<Session>) => Promise<void>;
   reports: Report[];
   deleteReports: () => Promise<void>;
   prices: Prices;
@@ -76,11 +76,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setPrices(state.prices || INITIAL_PRICES);
         setLabels(state.labels || INITIAL_LABELS);
         setCredentials(state.credentials || INITIAL_CREDENTIALS);
-        
-        // Restore active sessions from local storage to handle browser refresh
-        const savedSessions = JSON.parse(localStorage.getItem('sessions') || '{}');
-        setSessions(savedSessions);
-
+        setSessions(state.sessions || {});
       } catch (error) {
         console.error("Failed to load initial state from backend", error);
         toast.error("Could not connect to server. Using local fallback data.");
@@ -97,20 +93,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, [isAuthenticated]);
 
+  // Real-time session synchronization via polling
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const intervalId = setInterval(async () => {
+      try {
+        // Use fetch directly to avoid global error toasts for silent background sync
+        const response = await fetch('/api/sessions');
+        if (response.ok) {
+          const latestSessions = await response.json();
+          setSessions(latestSessions);
+        } else {
+            console.error("Session sync failed with status:", response.status);
+        }
+      } catch (error) {
+        // This can happen if the network is temporarily down, don't toast
+        console.error("Session sync network error:", error);
+      }
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(intervalId);
+  }, [isAuthenticated]);
+
   useEffect(() => {
     localStorage.setItem('theme', theme);
   }, [theme]);
   
-  // Persist sessions to localStorage to survive page reloads
-  useEffect(() => {
-    if(Object.keys(sessions).length > 0) {
-      localStorage.setItem('sessions', JSON.stringify(sessions));
-    } else {
-      localStorage.removeItem('sessions');
-    }
-  }, [sessions]);
-
-
   const toggleTheme = () => setTheme(currentTheme => {
     if (currentTheme === 'light') return 'dark';
     if (currentTheme === 'dark') return 'blue_orange';
@@ -137,7 +146,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const logout = () => {
     setIsAuthenticated(false);
     setSessions({});
-    localStorage.removeItem('sessions');
     sessionStorage.removeItem('adminPass');
   };
 
@@ -162,7 +170,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const updateDevice = async (id: number, updates: Partial<Device>) => {
+  const updateDevice = useCallback(async (id: number, updates: Partial<Device>) => {
     const originalDevices = [...devices];
     const deviceToUpdate = devices.find(d => d.id === id);
     if (!deviceToUpdate) return;
@@ -175,9 +183,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (error) {
         setDevices(originalDevices);
     }
-  };
+  }, [devices]);
 
-  const startSession = (deviceId: number, gameType: GameType, timeMode: TimeMode, playerName?: string, initialMinutes?: number) => {
+  const startSession = useCallback(async (deviceId: number, gameType: GameType, timeMode: TimeMode, playerName?: string, initialMinutes?: number) => {
     const now = Date.now();
     const newSession: Session = {
       deviceId,
@@ -191,11 +199,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       newSession.initialMinutes = initialMinutes;
       newSession.endTime = now + initialMinutes * 60 * 1000;
     }
+    
+    // Optimistically update UI
     setSessions(prev => ({ ...prev, [deviceId]: newSession }));
-    updateDevice(deviceId, { status: DeviceStatus.Busy });
-  };
+    await updateDevice(deviceId, { status: DeviceStatus.Busy });
+
+    try {
+      // Sync with backend
+      const sessionFromServer = await apiCall('/sessions/start', { method: 'POST', body: JSON.stringify(newSession) });
+      // Update state with confirmed data from server
+      setSessions(prev => ({...prev, [deviceId]: sessionFromServer}));
+    } catch(e) {
+      toast.error("Failed to start session on server.");
+      // Revert optimistic update
+      setSessions(prev => {
+          const newSessions = { ...prev };
+          delete newSessions[deviceId];
+          return newSessions;
+      });
+      await updateDevice(deviceId, { status: DeviceStatus.Available });
+    }
+  }, [updateDevice]);
   
-  const updateSession = (deviceId: number, updates: Partial<Session>) => {
+  const updateSession = useCallback(async (deviceId: number, updates: Partial<Session>) => {
+    const originalSession = sessions[deviceId];
+    if (!originalSession) return;
+    
+    // Optimistic update for snappy UI
     setSessions(prev => {
         const currentSession = prev[deviceId];
         if (!currentSession) return prev;
@@ -204,9 +234,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             [deviceId]: { ...currentSession, ...updates },
         };
     });
-  };
+
+    try {
+        await apiCall(`/sessions/${deviceId}`, { method: 'PUT', body: JSON.stringify(updates) });
+        // Polling will handle syncing the final state from the server, so no need to process response here.
+    } catch (e) {
+        toast.error("Failed to update session on server.");
+        // Revert optimistic update
+        setSessions(prev => ({ ...prev, [deviceId]: originalSession }));
+    }
+  }, [sessions]);
   
-  const endSession = async (deviceId: number) => {
+  const endSession = useCallback(async (deviceId: number) => {
     const session = sessions[deviceId];
     if (!session) return;
     
@@ -219,7 +258,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         delete newSessions[deviceId];
         return newSessions;
     });
-    updateDevice(deviceId, { status: DeviceStatus.Available });
+    await updateDevice(deviceId, { status: DeviceStatus.Available });
 
     const endTime = Date.now();
     const durationMinutes = Math.max(1, Math.ceil((endTime - session.startTime) / (1000 * 60)));
@@ -235,11 +274,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setLastEndedSession(newReportFromServer);
     } catch(e) {
       toast.error("Failed to save session report to server. Please check connection.");
-      // If server fails, we should revert the state change
+      // If server fails, revert the state change
       setSessions(prev => ({ ...prev, [deviceId]: session }));
-      updateDevice(deviceId, { status: DeviceStatus.Busy });
+      await updateDevice(deviceId, { status: DeviceStatus.Busy });
     }
-  };
+  }, [devices, prices, sessions, updateDevice]);
 
   const deleteReports = async () => {
     const originalReports = [...reports];

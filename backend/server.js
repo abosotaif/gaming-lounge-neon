@@ -178,6 +178,26 @@ const initializeDatabase = async () => {
       );
     `);
     
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        "deviceId" INTEGER PRIMARY KEY,
+        "startTime" BIGINT NOT NULL,
+        "gameType" TEXT NOT NULL,
+        "timeMode" TEXT NOT NULL,
+        "playerName" TEXT,
+        "initialMinutes" INTEGER,
+        "endTime" BIGINT,
+        status TEXT NOT NULL,
+        "timeUpNotified" BOOLEAN DEFAULT FALSE,
+        "showExtendModal" BOOLEAN DEFAULT FALSE,
+        "showTimeUpModal" BOOLEAN DEFAULT FALSE,
+        CONSTRAINT fk_device
+          FOREIGN KEY("deviceId") 
+          REFERENCES devices(id)
+          ON DELETE CASCADE
+      );
+    `);
+
     console.log('Database tables are ready.');
 
     const devicesCount = await client.query('SELECT COUNT(*) FROM devices');
@@ -231,8 +251,37 @@ const dbInitPromise = (async () => {
   }
 })();
 
+const formatSessionFromDb = (row) => ({
+    deviceId: row.deviceId,
+    startTime: Number(row.startTime),
+    gameType: row.gameType,
+    timeMode: row.timeMode,
+    playerName: row.playerName,
+    initialMinutes: row.initialMinutes,
+    endTime: row.endTime ? Number(row.endTime) : undefined,
+    status: row.status,
+    timeUpNotified: row.timeUpNotified,
+    showExtendModal: row.showExtendModal,
+    showTimeUpModal: row.showTimeUpModal,
+});
 
 // --- API Routes ---
+
+app.get('/api/sessions', async (req, res) => {
+    try {
+        await dbInitPromise;
+        const sessionsRes = await pool.query('SELECT * FROM sessions');
+        const sessions = sessionsRes.rows.reduce((acc, row) => {
+            acc[row.deviceId] = formatSessionFromDb(row);
+            return acc;
+        }, {});
+        res.json(sessions);
+    } catch (err) {
+        console.error('Sessions fetch error:', err);
+        res.status(500).json({ message: 'Error fetching sessions' });
+    }
+});
+
 
 app.get('/api/state', async (req, res) => {
     try {
@@ -240,18 +289,25 @@ app.get('/api/state', async (req, res) => {
         const devicesRes = await pool.query('SELECT * FROM devices ORDER BY id ASC');
         const reportsRes = await pool.query('SELECT * FROM reports ORDER BY "startTime" DESC');
         const settingsRes = await pool.query("SELECT key, value FROM settings");
+        const sessionsRes = await pool.query('SELECT * FROM sessions');
 
         const settings = settingsRes.rows.reduce((acc, row) => {
             acc[row.key] = row.value;
             return acc;
         }, {});
         
+        const sessions = sessionsRes.rows.reduce((acc, row) => {
+            acc[row.deviceId] = formatSessionFromDb(row);
+            return acc;
+        }, {});
+
         res.json({
             devices: devicesRes.rows,
             reports: reportsRes.rows,
             prices: settings.prices || INITIAL_PRICES,
             labels: settings.labels || INITIAL_LABELS,
             credentials: settings.credentials || INITIAL_CREDENTIALS,
+            sessions: sessions,
         });
     } catch (err) {
         console.error('State fetch error:', err);
@@ -320,6 +376,56 @@ app.delete('/api/devices/:id', async (req, res) => {
     }
 });
 
+app.post('/api/sessions/start', async (req, res) => {
+    try {
+        await dbInitPromise;
+        const { deviceId, startTime, gameType, timeMode, playerName, initialMinutes, endTime, status } = req.body;
+        
+        const newSession = await pool.query(
+            `INSERT INTO sessions ("deviceId", "startTime", "gameType", "timeMode", "playerName", "initialMinutes", "endTime", status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT ("deviceId") DO UPDATE SET
+             "startTime" = EXCLUDED."startTime", "gameType" = EXCLUDED."gameType", "timeMode" = EXCLUDED."timeMode", "playerName" = EXCLUDED."playerName",
+             "initialMinutes" = EXCLUDED."initialMinutes", "endTime" = EXCLUDED."endTime", status = EXCLUDED.status
+             RETURNING *`,
+            [deviceId, startTime, gameType, timeMode, playerName, initialMinutes, endTime, status]
+        );
+        res.status(201).json(formatSessionFromDb(newSession.rows[0]));
+    } catch (err) {
+        console.error('Start session error:', err);
+        res.status(500).json({ message: 'Error starting session' });
+    }
+});
+
+app.put('/api/sessions/:deviceId', async (req, res) => {
+    try {
+        await dbInitPromise;
+        const { deviceId } = req.params;
+        const updates = req.body;
+        
+        delete updates.deviceId;
+
+        const fields = Object.keys(updates);
+        const values = Object.values(updates);
+        
+        if (fields.length === 0) {
+            return res.status(400).json({ message: 'No update fields provided.' });
+        }
+
+        const setClause = fields.map((field, index) => `"${field}" = $${index + 1}`).join(', ');
+        const query = `UPDATE sessions SET ${setClause} WHERE "deviceId" = $${fields.length + 1} RETURNING *`;
+        const result = await pool.query(query, [...values, parseInt(deviceId, 10)]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'Session not found.' });
+        }
+        
+        res.json(formatSessionFromDb(result.rows[0]));
+    } catch (err) {
+        console.error('Update session error:', err);
+        res.status(500).json({ message: 'Error updating session' });
+    }
+});
+
 app.post('/api/sessions/end', async (req, res) => {
     try {
         await dbInitPromise;
@@ -331,8 +437,13 @@ app.post('/api/sessions/end', async (req, res) => {
             'INSERT INTO reports (id, "deviceId", "startTime", "endTime", "durationMinutes", "gameType", cost, date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
             [newId, reportData.deviceId, reportData.startTime, reportData.endTime, reportData.durationMinutes, reportData.gameType, reportData.cost, date]
         );
+        
+        // After creating the report, delete the active session
+        await pool.query('DELETE FROM sessions WHERE "deviceId" = $1', [reportData.deviceId]);
+
         res.status(201).json(newReport.rows[0]);
-    } catch (err) {
+    } catch (err)
+ {
         console.error('End session error:', err);
         res.status(500).json({ message: 'Error saving session' });
     }
