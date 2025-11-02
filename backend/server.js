@@ -251,6 +251,7 @@ const dbInitPromise = (async () => {
   }
 })();
 
+// --- Data Formatting Helpers ---
 const formatSessionFromDb = (row) => ({
     deviceId: row.deviceId,
     startTime: Number(row.startTime),
@@ -264,6 +265,17 @@ const formatSessionFromDb = (row) => ({
     showExtendModal: row.showExtendModal,
     showTimeUpModal: row.showTimeUpModal,
 });
+
+const formatReportFromDb = (row) => {
+    if (!row) return null;
+    return {
+        ...row,
+        startTime: Number(row.startTime),
+        endTime: Number(row.endTime),
+        cost: parseFloat(row.cost), // CRITICAL: Ensure cost is a number
+    };
+};
+
 
 // --- API Routes ---
 
@@ -303,7 +315,7 @@ app.get('/api/state', async (req, res) => {
 
         res.json({
             devices: devicesRes.rows,
-            reports: reportsRes.rows,
+            reports: reportsRes.rows.map(formatReportFromDb),
             prices: settings.prices || INITIAL_PRICES,
             labels: settings.labels || INITIAL_LABELS,
             credentials: settings.credentials || INITIAL_CREDENTIALS,
@@ -441,7 +453,7 @@ app.post('/api/sessions/end', async (req, res) => {
         // After creating the report, delete the active session
         await pool.query('DELETE FROM sessions WHERE "deviceId" = $1', [reportData.deviceId]);
 
-        res.status(201).json(newReport.rows[0]);
+        res.status(201).json(formatReportFromDb(newReport.rows[0]));
     } catch (err)
  {
         console.error('End session error:', err);
