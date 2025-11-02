@@ -261,7 +261,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     await updateDevice(deviceId, { status: DeviceStatus.Available });
 
     const endTime = Date.now();
-    const durationMinutes = Math.max(1, Math.ceil((endTime - session.startTime) / (1000 * 60)));
+    const durationMinutes = Math.max(1, Math.floor((endTime - session.startTime) / (1000 * 60)));
     const devicePrices = device.type === DeviceType.PS5 ? prices.ps5 : prices.ps4;
     const pricePerHour = devicePrices[session.gameType] || 0;
     const cost = (durationMinutes / 60) * pricePerHour;

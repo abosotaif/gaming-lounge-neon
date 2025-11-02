@@ -273,6 +273,7 @@ const formatReportFromDb = (row) => {
         startTime: Number(row.startTime),
         endTime: Number(row.endTime),
         cost: parseFloat(row.cost), // CRITICAL: Ensure cost is a number
+        date: new Date(row.date).toISOString().split('T')[0], // CRITICAL: Format date correctly
     };
 };
 
