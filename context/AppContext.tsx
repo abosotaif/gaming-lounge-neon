@@ -262,7 +262,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const endTime = Date.now();
     const durationMs = endTime - session.startTime;
-    const durationMinutes = Math.max(1, Math.floor(durationMs / (1000 * 60)));
+    const durationMinutes = Math.floor(durationMs / (1000 * 60));
     const devicePrices = device.type === DeviceType.PS5 ? prices.ps5 : prices.ps4;
     const pricePerHour = devicePrices[session.gameType] || 0;
     const cost = (durationMinutes / 60) * pricePerHour;

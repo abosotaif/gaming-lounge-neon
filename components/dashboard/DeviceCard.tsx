@@ -59,7 +59,7 @@ const DeviceCard: React.FC<{ device: Device }> = ({ device }) => {
 
     const endTime = Date.now();
     const durationMs = endTime - session.startTime;
-    const durationMinutes = Math.max(1, Math.floor(durationMs / (1000 * 60)));
+    const durationMinutes = Math.floor(durationMs / (1000 * 60));
     
     const devicePrices = currentDevice.type === DeviceType.PS5 ? prices.ps5 : prices.ps4;
     
