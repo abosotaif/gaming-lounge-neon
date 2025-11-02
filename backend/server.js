@@ -272,8 +272,8 @@ const formatReportFromDb = (row) => {
         ...row,
         startTime: Number(row.startTime),
         endTime: Number(row.endTime),
-        cost: parseFloat(row.cost), // CRITICAL: Ensure cost is a number
-        date: new Date(row.date).toISOString().split('T')[0], // CRITICAL: Format date correctly
+        cost: parseFloat(row.cost),
+        // date field is already correctly formatted by the SQL query
     };
 };
 
@@ -300,7 +300,7 @@ app.get('/api/state', async (req, res) => {
     try {
         await dbInitPromise; // Ensure DB is ready before proceeding
         const devicesRes = await pool.query('SELECT * FROM devices ORDER BY id ASC');
-        const reportsRes = await pool.query('SELECT * FROM reports ORDER BY "startTime" DESC');
+        const reportsRes = await pool.query('SELECT id, "deviceId", "startTime", "endTime", "durationMinutes", "gameType", cost, TO_CHAR(date, \'YYYY-MM-DD\') as date FROM reports ORDER BY "startTime" DESC');
         const settingsRes = await pool.query("SELECT key, value FROM settings");
         const sessionsRes = await pool.query('SELECT * FROM sessions');
 
@@ -453,8 +453,14 @@ app.post('/api/sessions/end', async (req, res) => {
         
         // After creating the report, delete the active session
         await pool.query('DELETE FROM sessions WHERE "deviceId" = $1', [reportData.deviceId]);
+        
+        // Manually format the date for the response since the RETURNING clause gives back the raw date
+        const formattedReport = {
+            ...newReport.rows[0],
+            date: new Date(newReport.rows[0].date).toISOString().split('T')[0]
+        };
 
-        res.status(201).json(formatReportFromDb(newReport.rows[0]));
+        res.status(201).json(formatReportFromDb(formattedReport));
     } catch (err)
  {
         console.error('End session error:', err);
@@ -501,9 +507,12 @@ app.post('/api/settings/credentials', async (req, res) => {
 
 // --- Start Server for Local Development ---
 // Vercel ignores this and uses the exported `app` instance.
-app.listen(PORT, () => {
-  console.log(`Backend server for local development is running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+      console.log(`Backend server for local development is running on http://localhost:${PORT}`);
+    });
+}
+
 
 // Export the app instance for Vercel
 export default app;

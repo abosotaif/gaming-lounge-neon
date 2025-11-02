@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { Device, DeviceStatus, Session, GameType, DeviceType } from '../../types';
@@ -59,7 +58,8 @@ const DeviceCard: React.FC<{ device: Device }> = ({ device }) => {
     if (!currentDevice) return;
 
     const endTime = Date.now();
-    const durationMinutes = Math.floor((endTime - session.startTime) / (1000 * 60));
+    const durationMs = endTime - session.startTime;
+    const durationMinutes = Math.max(1, Math.floor(durationMs / (1000 * 60)));
     
     const devicePrices = currentDevice.type === DeviceType.PS5 ? prices.ps5 : prices.ps4;
     
