@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import Login from './components/auth/Login';
 import Header from './components/layout/Header';
 import DashboardView from './components/dashboard/DashboardView';
@@ -6,13 +6,18 @@ import ReportsView from './components/reports/ReportsView';
 import AdminView from './components/admin/AdminView';
 import { useAppContext } from './hooks/useAppContext';
 import { Toaster } from 'react-hot-toast';
-import { Page, TimeMode, Session, Report } from './types';
+import { Page, TimeMode, Report } from './types';
 import { useTranslation } from './hooks/useTranslation';
 import { LogoutIcon } from './components/ui/Icons';
 
 const App: React.FC = () => {
   const { theme, isAuthenticated, page, sessions, updateSession, lastEndedSession, clearLastEndedSession, devices, logout } = useAppContext();
   const { t } = useTranslation();
+
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const updateSessionRef = useRef(updateSession);
+  updateSessionRef.current = updateSession;
 
   useEffect(() => {
     const root = document.documentElement;
@@ -26,16 +31,19 @@ const App: React.FC = () => {
   }, [theme]);
 
   useEffect(() => {
-    const activeSessions = (Object.values(sessions) as (Session | undefined)[]).filter(s => s?.status === 'active');
+    if (!isAuthenticated) return;
+
     const interval = setInterval(() => {
-        activeSessions.forEach(session => {
-            if (session && session.timeMode === TimeMode.Timed && session.endTime && session.endTime <= Date.now() && !session.timeUpNotified) {
-                updateSession(session.deviceId, { timeUpNotified: true, showTimeUpModal: true });
+        const currentSessions = Object.values(sessionsRef.current);
+        currentSessions.forEach(session => {
+            if (session && session.status === 'active' && session.timeMode === TimeMode.Timed && session.endTime && session.endTime <= Date.now() && !session.timeUpNotified) {
+                updateSessionRef.current(session.deviceId, { timeUpNotified: true, showTimeUpModal: true });
             }
         });
     }, 1000);
+    
     return () => clearInterval(interval);
-  }, [sessions, updateSession]);
+  }, [isAuthenticated]);
   
   useEffect(() => {
     if (lastEndedSession) {
